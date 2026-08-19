@@ -85,6 +85,17 @@ function parseNetSheet(ws, sheetLabel) {
   return products;
 }
 
+// Map raw sheet names from the workbook to cleaner display labels
+const SHEET_LABEL_MAP = {
+  "dental rrp": "Dental NET",
+  "spares rrp": "Spares NET",
+  "sheet1": "Extra-Oral NET",
+};
+
+function cleanSheetLabel(raw) {
+  return SHEET_LABEL_MAP[raw.trim().toLowerCase()] || raw.trim();
+}
+
 async function fetchAndParse(url, sheetNames) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to load ${url} (${res.status})`);
@@ -99,7 +110,7 @@ async function fetchAndParse(url, sheetNames) {
     : wb.SheetNames;
 
   sheetsToUse.forEach(name => {
-    const label = name.trim();
+    const label = cleanSheetLabel(name);
     const parsed = parseNetSheet(wb.Sheets[name], label);
     if (parsed.length > 0) {
       foundSheets.push(label);
