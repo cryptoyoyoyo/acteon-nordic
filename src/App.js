@@ -32,7 +32,7 @@ function emptySlot() {
 function CurrencySelector({ activeCurrency, onChange }) {
   return (
     <div className="currency-selector">
-      {Object.entries(CURRENCIES).map(([code, cur]) => (
+      {Object.entries(CURRENCY_META).map(([code, cur]) => (
         <button
           key={code}
           className={`currency-btn ${activeCurrency === code ? "currency-active" : ""}`}
