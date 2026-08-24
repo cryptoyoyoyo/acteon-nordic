@@ -4,7 +4,10 @@ import logo from "./assets/acteon-logo.jpg";
 import { parseNordicPricesFromUrls } from "./parseNordicPrices";
 import { parseBottomPricesFromUrl } from "./parseBottomPrices";
 import catalogueLookup from "./catalogueLookup.json";
-import { CURRENCIES, DEFAULT_CURRENCY, formatCurrency } from "./exchangeRates";
+import {
+  CURRENCY_META, DEFAULT_RATES, DEFAULT_CURRENCY,
+  loadRates, saveRates, resetRates, buildCurrencies, formatCurrency
+} from "./exchangeRates";
 
 const netUrl = `${process.env.PUBLIC_URL}/data/nordic-net-prices.xlsx`;
 const extraOralUrl = `${process.env.PUBLIC_URL}/data/nordic-extra-oral.xlsx`;
@@ -44,7 +47,70 @@ function CurrencySelector({ activeCurrency, onChange }) {
   );
 }
 
-// ── Product Search Dropdown ─────────────────────────────────────────────────
+// ── Edit Rates Modal ────────────────────────────────────────────────────────
+function EditRatesModal({ rates, onSave, onReset, onClose }) {
+  const [draft, setDraft] = useState({ ...rates });
+
+  function handleChange(code, val) {
+    setDraft(prev => ({ ...prev, [code]: val }));
+  }
+
+  function handleSave() {
+    const parsed = {};
+    let valid = true;
+    for (const [code, val] of Object.entries(draft)) {
+      const n = parseFloat(val);
+      if (!Number.isFinite(n) || n <= 0) { valid = false; break; }
+      parsed[code] = n;
+    }
+    if (!valid) { alert("Please enter valid positive numbers for all rates."); return; }
+    onSave(parsed);
+    onClose();
+  }
+
+  function handleReset() {
+    if (window.confirm("Reset all rates to defaults?")) {
+      onReset();
+      onClose();
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">Edit Exchange Rates</div>
+          <div className="modal-subtitle">1 EUR = X local currency. Saved to this browser.</div>
+        </div>
+        <div className="modal-body">
+          {Object.entries(CURRENCY_META).filter(([code]) => code !== "EUR").map(([code, meta]) => (
+            <div className="rate-row" key={code}>
+              <span className="rate-flag">{meta.flag}</span>
+              <span className="rate-label">{meta.label} ({code})</span>
+              <span className="rate-eq">1 EUR =</span>
+              <input
+                className="rate-input field-input"
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={draft[code]}
+                onChange={e => handleChange(code, e.target.value)}
+              />
+              <span className="rate-symbol">{meta.symbol}</span>
+            </div>
+          ))}
+        </div>
+        <div className="modal-footer">
+          <button className="modal-reset-btn" onClick={handleReset}>Reset to defaults</button>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button className="modal-cancel-btn" onClick={onClose}>Cancel</button>
+            <button className="modal-save-btn" onClick={handleSave}>Save rates</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 function ProductSearchDropdown({ priceData, bottomData, currency, value, onSelect, placeholder }) {
   const [query, setQuery] = useState(value ? `${value.code} — ${value.name}` : "");
   const [open, setOpen] = useState(false);
@@ -385,8 +451,11 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("All tabs");
   const [currencyCode, setCurrencyCode] = useState(DEFAULT_CURRENCY);
+  const [rates, setRates] = useState(() => loadRates());
+  const [showRatesModal, setShowRatesModal] = useState(false);
 
-  const currency = CURRENCIES[currencyCode];
+  const currencies = useMemo(() => buildCurrencies(rates), [rates]);
+  const currency = currencies[currencyCode];
 
   useEffect(() => {
     let cancelled = false;
@@ -454,6 +523,9 @@ export default function App() {
         {!loading && !loadError && (
           <>
             <CurrencySelector activeCurrency={currencyCode} onChange={setCurrencyCode} />
+            <button className="edit-rates-btn" onClick={() => setShowRatesModal(true)} title="Edit exchange rates">
+              ✏️ Rates
+            </button>
             <nav className="app-nav">
               <button className={`nav-btn ${activeTab === "search" ? "nav-active" : ""}`} onClick={() => setActiveTab("search")}>🔍 Price Search</button>
               <button className={`nav-btn ${activeTab === "deal" ? "nav-active" : ""}`} onClick={() => setActiveTab("deal")}>🤝 Deal Builder</button>
@@ -461,6 +533,15 @@ export default function App() {
           </>
         )}
       </header>
+
+      {showRatesModal && (
+        <EditRatesModal
+          rates={rates}
+          onSave={(newRates) => { saveRates(newRates); setRates(newRates); }}
+          onReset={() => { const r = resetRates(); setRates(r); }}
+          onClose={() => setShowRatesModal(false)}
+        />
+      )}
 
       <main className="main">
         {loading ? (
