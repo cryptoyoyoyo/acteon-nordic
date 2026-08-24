@@ -4,16 +4,12 @@ import logo from "./assets/acteon-logo.jpg";
 import { parseNordicPricesFromUrls } from "./parseNordicPrices";
 import { parseBottomPricesFromUrl } from "./parseBottomPrices";
 import catalogueLookup from "./catalogueLookup.json";
+import { CURRENCIES, DEFAULT_CURRENCY, formatCurrency } from "./exchangeRates";
 
 const netUrl = `${process.env.PUBLIC_URL}/data/nordic-net-prices.xlsx`;
 const extraOralUrl = `${process.env.PUBLIC_URL}/data/nordic-extra-oral.xlsx`;
 const bottomUrl = `${process.env.PUBLIC_URL}/data/nordic-bottom-prices.xlsx`;
 const NUM_SLOTS = 5;
-
-function formatEUR(n) {
-  if (n === null || n === undefined || Number.isNaN(n)) return "—";
-  return `€${n.toFixed(2)}`;
-}
 
 function formatPct(n) {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";
@@ -26,11 +22,30 @@ function cataloguePageUrl(pageNum) {
 }
 
 function emptySlot() {
-  return { query: "", product: null, qty: 1, foc: false };
+  return { product: null, qty: 1, foc: false };
+}
+
+// ── Currency Selector ───────────────────────────────────────────────────────
+function CurrencySelector({ activeCurrency, onChange }) {
+  return (
+    <div className="currency-selector">
+      {Object.entries(CURRENCIES).map(([code, cur]) => (
+        <button
+          key={code}
+          className={`currency-btn ${activeCurrency === code ? "currency-active" : ""}`}
+          onClick={() => onChange(code)}
+          title={cur.label}
+        >
+          <span className="currency-flag">{cur.flag}</span>
+          <span className="currency-code">{code}</span>
+        </button>
+      ))}
+    </div>
+  );
 }
 
 // ── Product Search Dropdown ─────────────────────────────────────────────────
-function ProductSearchDropdown({ priceData, bottomData, value, onSelect, placeholder }) {
+function ProductSearchDropdown({ priceData, bottomData, currency, value, onSelect, placeholder }) {
   const [query, setQuery] = useState(value ? `${value.code} — ${value.name}` : "");
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -95,7 +110,9 @@ function ProductSearchDropdown({ priceData, bottomData, value, onSelect, placeho
               <div key={i} className="psd-option" onMouseDown={() => handlePick(p)}>
                 <span className="psd-code">{p.code}</span>
                 <span className="psd-name">{p.name}</span>
-                {bp?.target != null && <span className="psd-hint">Target {formatEUR(bp.target)}</span>}
+                {bp?.target != null && (
+                  <span className="psd-hint">Target {formatCurrency(bp.target, currency)}</span>
+                )}
               </div>
             );
           })}
@@ -106,7 +123,7 @@ function ProductSearchDropdown({ priceData, bottomData, value, onSelect, placeho
 }
 
 // ── Deal Builder ────────────────────────────────────────────────────────────
-function DealBuilder({ priceData, bottomData }) {
+function DealBuilder({ priceData, bottomData, currency }) {
   const [slots, setSlots] = useState(() => Array.from({ length: NUM_SLOTS }, emptySlot));
   const [desiredNet, setDesiredNet] = useState("");
 
@@ -119,6 +136,13 @@ function DealBuilder({ priceData, bottomData }) {
     setDesiredNet("");
   }
 
+  // desiredNet is always entered in the active currency, convert to EUR for calculation
+  const desiredNetEur = useMemo(() => {
+    if (desiredNet === "") return null;
+    const val = parseFloat(desiredNet);
+    return Number.isFinite(val) ? val / currency.rate : null;
+  }, [desiredNet, currency]);
+
   const analysis = useMemo(() => {
     const activeSlots = slots.filter(s => s.product !== null);
     if (activeSlots.length === 0) return null;
@@ -130,52 +154,51 @@ function DealBuilder({ priceData, bottomData }) {
       { key: "otherDealer", label: "Other Dealer Bottom",cls: "bp-other-dealer" },
     ];
 
-    const desiredInput = desiredNet !== "" ? parseFloat(desiredNet) : null;
-
+    // All internal calculations in EUR, display in active currency
     const rows = activeSlots.map(s => {
       const bp = bottomData?.byCode[s.product.code.toLowerCase()] || null;
       return {
         code: s.product.code,
         name: s.product.name,
-        net: s.product.net,
-        netLine: s.product.net != null ? s.product.net * s.qty : null,
+        net: s.product.net,                            // EUR
+        netLine: s.product.net != null ? s.product.net * s.qty : null, // EUR
         qty: s.qty,
         foc: s.foc,
         bp,
       };
     });
 
-    const paidNetTotal = rows.filter(r => !r.foc).reduce((acc, r) => acc + (r.netLine || 0), 0);
-    const comparisonPrice = desiredInput !== null ? desiredInput : paidNetTotal;
-    const usingDefault = desiredInput === null;
+    const paidNetTotal = rows.filter(r => !r.foc).reduce((acc, r) => acc + (r.netLine || 0), 0); // EUR
+    const comparisonEur = desiredNetEur !== null ? desiredNetEur : paidNetTotal;
+    const usingDefault = desiredNetEur === null;
 
     const tierResults = tiers.map(({ key, label, cls }) => {
-      let revenueTotal = 0;
-      let focCost = 0;
+      let revenueTotal = 0; // EUR
+      let focCost = 0;      // EUR
 
       const lineItems = rows.map(r => {
-        const unitFloor = r.bp ? r.bp[key] : null;
-        const lineFloor = unitFloor != null ? unitFloor * r.qty : null;
+        const unitFloor = r.bp ? r.bp[key] : null; // EUR
+        const lineFloor = unitFloor != null ? unitFloor * r.qty : null; // EUR
         if (r.foc) {
           if (lineFloor != null) focCost += lineFloor;
-          return { ...r, unitFloor, lineFloor };
         } else {
           if (lineFloor != null) revenueTotal += lineFloor;
-          return { ...r, unitFloor, lineFloor };
         }
+        return { ...r, unitFloor, lineFloor };
       });
 
-      const bundleFloor = revenueTotal + focCost;
-      const desiredNetMargin = comparisonPrice - bundleFloor;
+      const bundleFloor = revenueTotal + focCost; // EUR
+      const desiredNetMargin = comparisonEur - bundleFloor; // EUR
       const desiredFeasible = desiredNetMargin >= 0;
 
       return { key, label, cls, lineItems, revenueTotal, focCost, bundleFloor, desiredNetMargin, desiredFeasible };
     });
 
-    return { tierResults, rows, comparisonPrice, usingDefault, paidNetTotal };
-  }, [slots, bottomData, desiredNet]);
+    return { tierResults, rows, comparisonEur, usingDefault, paidNetTotal };
+  }, [slots, bottomData, desiredNetEur]);
 
   const hasProducts = slots.some(s => s.product !== null);
+  const cur = currency;
 
   return (
     <div className="deal-builder">
@@ -196,6 +219,7 @@ function DealBuilder({ priceData, bottomData }) {
               <ProductSearchDropdown
                 priceData={priceData}
                 bottomData={bottomData}
+                currency={cur}
                 value={slot.product}
                 onSelect={p => updateSlot(i, { product: p, foc: p ? slot.foc : false })}
                 placeholder={`Search product ${i + 1}…`}
@@ -204,8 +228,12 @@ function DealBuilder({ priceData, bottomData }) {
                 <div className="slot-product-info">
                   <span className="result-tag" style={{ fontSize: "10px" }}>{slot.product.sheet}</span>
                   <span style={{ fontSize: "11px", color: "var(--text-2)", marginLeft: "6px" }}>
-                    NET {formatEUR(slot.product.net)}
-                    {slot.qty > 1 && <span style={{ color: "var(--text-3)" }}> (×{slot.qty} = {formatEUR(slot.product.net * slot.qty)})</span>}
+                    NET {formatCurrency(slot.product.net, cur)}
+                    {slot.qty > 1 && (
+                      <span style={{ color: "var(--text-3)" }}>
+                        {" "}(×{slot.qty} = {formatCurrency(slot.product.net * slot.qty, cur)})
+                      </span>
+                    )}
                   </span>
                 </div>
               )}
@@ -237,16 +265,18 @@ function DealBuilder({ priceData, bottomData }) {
 
       {hasProducts && (
         <div className="desired-net-row">
-          <div className="field" style={{ maxWidth: "320px" }}>
-            <label className="field-label">Customer / Custom Price for Bundle — optional (default: NET total of paid items)</label>
+          <div className="field" style={{ maxWidth: "360px" }}>
+            <label className="field-label">
+              Customer / Custom Price for Bundle — optional (default: NET total of paid items)
+            </label>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ fontWeight: 600, color: "var(--text-2)" }}>€</span>
+              <span style={{ fontWeight: 600, color: "var(--text-2)" }}>{cur.symbol}</span>
               <input
                 className="field-input"
                 type="number"
                 min="0"
                 step="0.01"
-                placeholder={analysis ? `Default: €${analysis.paidNetTotal.toFixed(2)} (NET)` : "e.g. 4000"}
+                placeholder={analysis ? `Default: ${formatCurrency(analysis.paidNetTotal, cur)} (NET)` : `e.g. ${cur.symbol} 4000`}
                 value={desiredNet}
                 onChange={e => setDesiredNet(e.target.value)}
               />
@@ -263,7 +293,7 @@ function DealBuilder({ priceData, bottomData }) {
             <div className="deal-line-header">
               <span>Product</span>
               <span>Qty</span>
-              <span>NET (Dealer)</span>
+              <span>NET ({cur.label})</span>
               <span>Type</span>
             </div>
             {analysis.rows.map((r, i) => (
@@ -274,8 +304,8 @@ function DealBuilder({ priceData, bottomData }) {
                 </span>
                 <span className="deal-line-qty">×{r.qty}</span>
                 <span className="deal-line-net">
-                  {r.netLine != null ? formatEUR(r.netLine) : "—"}
-                  <span className="deal-line-unit-hint"> ({formatEUR(r.net)} ea)</span>
+                  {r.netLine != null ? formatCurrency(r.netLine, cur) : "—"}
+                  <span className="deal-line-unit-hint"> ({formatCurrency(r.net, cur)} ea)</span>
                 </span>
                 <span className={`deal-line-type ${r.foc ? "type-foc" : "type-paid"}`}>
                   {r.foc ? "FOC" : "Paid"}
@@ -289,9 +319,9 @@ function DealBuilder({ priceData, bottomData }) {
               return (
                 <div className="deal-line-totals">
                   <span className="deal-total-label">NET Total</span>
-                  <span className="deal-total-paid">Paid: <strong>{formatEUR(paidTotal)}</strong></span>
-                  {hasFoc && <span className="deal-total-foc">FOC: <strong>{formatEUR(focTotal)}</strong></span>}
-                  <span className="deal-total-bundle">Bundle: <strong>{formatEUR(paidTotal + focTotal)}</strong></span>
+                  <span className="deal-total-paid">Paid: <strong>{formatCurrency(paidTotal, cur)}</strong></span>
+                  {hasFoc && <span className="deal-total-foc">FOC: <strong>{formatCurrency(focTotal, cur)}</strong></span>}
+                  <span className="deal-total-bundle">Bundle: <strong>{formatCurrency(paidTotal + focTotal, cur)}</strong></span>
                 </div>
               );
             })()}
@@ -306,19 +336,31 @@ function DealBuilder({ priceData, bottomData }) {
                     <div className="tier-line" key={i}>
                       <span className="tier-line-code">{r.code}</span>
                       <span className="tier-line-qty">×{r.qty}</span>
-                      <span className="tier-line-unit">{r.unitFloor != null ? `${formatEUR(r.unitFloor)} each` : "No floor price"}</span>
-                      <span className="tier-line-total">{r.lineFloor != null ? formatEUR(r.lineFloor) : "—"}</span>
+                      <span className="tier-line-unit">
+                        {r.unitFloor != null ? `${formatCurrency(r.unitFloor, cur)} each` : "No floor price"}
+                      </span>
+                      <span className="tier-line-total">
+                        {r.lineFloor != null ? formatCurrency(r.lineFloor, cur) : "—"}
+                      </span>
                     </div>
                   ))}
                 </div>
                 <div className="tier-card-summary">
                   <div className="tier-summary-row tier-bundle-total">
                     <span>Bundle total (floor)</span>
-                    <span>{formatEUR(tier.bundleFloor)}</span>
+                    <span>{formatCurrency(tier.bundleFloor, cur)}</span>
                   </div>
                   <div className={`tier-summary-row desired-row ${tier.desiredFeasible ? "desired-ok" : "desired-fail"}`}>
-                    <span>{analysis.usingDefault ? `NET (${formatEUR(analysis.comparisonPrice)}) vs floor` : `Customer price (${formatEUR(analysis.comparisonPrice)}) vs floor`}</span>
-                    <span>{tier.desiredFeasible ? `✓ +${formatEUR(tier.desiredNetMargin)} margin` : `✗ ${formatEUR(Math.abs(tier.desiredNetMargin))} short`}</span>
+                    <span>
+                      {analysis.usingDefault
+                        ? `NET (${formatCurrency(analysis.comparisonEur, cur)}) vs floor`
+                        : `Customer price (${formatCurrency(analysis.comparisonEur, cur)}) vs floor`}
+                    </span>
+                    <span>
+                      {tier.desiredFeasible
+                        ? `✓ +${formatCurrency(tier.desiredNetMargin, cur)} margin`
+                        : `✗ ${formatCurrency(Math.abs(tier.desiredNetMargin), cur)} short`}
+                    </span>
                   </div>
                 </div>
                 <div className={`tier-verdict ${tier.desiredFeasible ? "verdict-ok" : "verdict-warn"}`}>
@@ -342,6 +384,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("search");
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("All tabs");
+  const [currencyCode, setCurrencyCode] = useState(DEFAULT_CURRENCY);
+
+  const currency = CURRENCIES[currencyCode];
 
   useEffect(() => {
     let cancelled = false;
@@ -407,10 +452,13 @@ export default function App() {
           <div className="subtitle">NORDIC NET PRICE LIST 2026</div>
         </div>
         {!loading && !loadError && (
-          <nav className="app-nav">
-            <button className={`nav-btn ${activeTab === "search" ? "nav-active" : ""}`} onClick={() => setActiveTab("search")}>🔍 Price Search</button>
-            <button className={`nav-btn ${activeTab === "deal" ? "nav-active" : ""}`} onClick={() => setActiveTab("deal")}>🤝 Deal Builder</button>
-          </nav>
+          <>
+            <CurrencySelector activeCurrency={currencyCode} onChange={setCurrencyCode} />
+            <nav className="app-nav">
+              <button className={`nav-btn ${activeTab === "search" ? "nav-active" : ""}`} onClick={() => setActiveTab("search")}>🔍 Price Search</button>
+              <button className={`nav-btn ${activeTab === "deal" ? "nav-active" : ""}`} onClick={() => setActiveTab("deal")}>🤝 Deal Builder</button>
+            </nav>
+          </>
         )}
       </header>
 
@@ -420,7 +468,7 @@ export default function App() {
         ) : loadError ? (
           <div className="upload-card"><div className="error-msg">⚠ {loadError}</div></div>
         ) : activeTab === "deal" ? (
-          <DealBuilder priceData={priceData} bottomData={bottomData} />
+          <DealBuilder priceData={priceData} bottomData={bottomData} currency={currency} />
         ) : (
           <>
             <div className="search-card">
@@ -446,7 +494,12 @@ export default function App() {
             </div>
 
             {!search.trim() ? (
-              <div className="hint-text">Start typing a product code or description to search all {totalProducts.toLocaleString()} products across {totalTabs} tabs.</div>
+              <div className="hint-text">
+                Start typing a product code or description to search all {totalProducts.toLocaleString()} products across {totalTabs} tabs.
+                {currencyCode !== "EUR" && (
+                  <span className="currency-hint"> Prices shown in {currency.label} ({currencyCode}).</span>
+                )}
+              </div>
             ) : results.length === 0 ? (
               <div className="hint-text">No products match "{search}".</div>
             ) : (
@@ -469,9 +522,15 @@ export default function App() {
 
                       <div className="rrp-row">
                         <div className="price-block">
-                          <span className="rrp-label">NET (Dealer)</span>
-                          <span className="rrp-value">{formatEUR(p.net)}</span>
+                          <span className="rrp-label">NET ({currency.label})</span>
+                          <span className="rrp-value">{formatCurrency(p.net, currency)}</span>
                         </div>
+                        {currencyCode !== "EUR" && (
+                          <div className="price-block">
+                            <span className="rrp-label" style={{ color: "var(--text-3)", fontSize: "11px" }}>EUR</span>
+                            <span className="rrp-value" style={{ fontSize: "13px", color: "var(--text-2)" }}>€{p.net?.toFixed(2)}</span>
+                          </div>
+                        )}
                       </div>
 
                       {bottomData && (
@@ -481,19 +540,19 @@ export default function App() {
                             <div className="bottom-price-grid">
                               <div className="bottom-price-cell bp-target">
                                 <div className="bottom-price-label">Target Price</div>
-                                <div className="bottom-price-value">{formatEUR(bottomMatch.target)}</div>
+                                <div className="bottom-price-value">{formatCurrency(bottomMatch.target, currency)}</div>
                               </div>
                               <div className="bottom-price-cell bp-key-account">
                                 <div className="bottom-price-label">Key Account Bottom</div>
-                                <div className="bottom-price-value">{formatEUR(bottomMatch.keyAccount)}</div>
+                                <div className="bottom-price-value">{formatCurrency(bottomMatch.keyAccount, currency)}</div>
                               </div>
                               <div className="bottom-price-cell bp-big-dealer">
                                 <div className="bottom-price-label">Big Dealer Bottom</div>
-                                <div className="bottom-price-value">{formatEUR(bottomMatch.bigDealer)}</div>
+                                <div className="bottom-price-value">{formatCurrency(bottomMatch.bigDealer, currency)}</div>
                               </div>
                               <div className="bottom-price-cell bp-other-dealer">
                                 <div className="bottom-price-label">Other Dealer Bottom</div>
-                                <div className="bottom-price-value">{formatEUR(bottomMatch.otherDealer)}</div>
+                                <div className="bottom-price-value">{formatCurrency(bottomMatch.otherDealer, currency)}</div>
                               </div>
                             </div>
                           ) : (
